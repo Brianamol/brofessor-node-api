@@ -1,0 +1,517 @@
+// prisma/schema.prisma
+// Full marketplace database schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "fullTextIndex"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+//  USERS  (mirrored from Keycloak for relations)
+// ─────────────────────────────────────────────
+
+model User {
+  id            String    @id                    // Keycloak user ID (UUID)
+  email         String    @unique
+  username      String    @unique
+  firstName     String?
+  lastName      String?
+  phone         String?   @unique
+  avatarUrl     String?
+  isActive      Boolean   @default(true)
+  isSeller      Boolean   @default(false)
+  isVerified    Boolean   @default(false)
+
+  // Seller profile (only if isSeller = true)
+  sellerProfile SellerProfile?
+
+  // Relations
+  addresses     Address[]
+  orders        Order[]
+  reviews       Review[]
+  wishlistItems WishlistItem[]
+  products      Product[]       // Products listed by this seller
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("users")
+}
+
+model SellerProfile {
+  id              Int     @id @default(autoincrement())
+  userId          String  @unique
+  user            User    @relation(fields: [userId], references: [id])
+  businessName    String
+  businessType    String?  // individual, company
+  kraPin          String?  // Kenya Revenue Authority PIN
+  description     String?  @db.Text
+  logoUrl         String?
+  bannerUrl       String?
+  rating          Decimal  @default(0) @db.Decimal(3, 2)
+  totalSales      Int      @default(0)
+  isVerified      Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("seller_profiles")
+}
+
+model Address {
+  id         Int     @id @default(autoincrement())
+  userId     String
+  user       User    @relation(fields: [userId], references: [id])
+  label      String  // Home, Work, etc.
+  fullName   String
+  phone      String
+  line1      String
+  line2      String?
+  city       String
+  county     String  // Kenyan county
+  postalCode String?
+  isDefault  Boolean @default(false)
+
+  orders     Order[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("addresses")
+}
+
+// ─────────────────────────────────────────────
+//  CATEGORIES  (self-referencing, 4 levels deep)
+// ─────────────────────────────────────────────
+
+model Category {
+  id          Int        @id @default(autoincrement())
+  name        String     @db.VarChar(100)
+  slug        String     @unique @db.VarChar(120)
+  description String?    @db.Text
+  iconUrl     String?
+  bannerUrl   String?
+  level       Int        @default(1)   // 1=root, 2=sub, 3=sub-sub, 4=leaf
+  sortOrder   Int        @default(0)
+  isActive    Boolean    @default(true)
+  isFeatured  Boolean    @default(false)
+
+  // Self-referencing hierarchy
+  parentId    Int?
+  parent      Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryTree")
+
+  // Products in this category
+  products    Product[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([parentId])
+  @@index([slug])
+  @@map("categories")
+}
+
+// ─────────────────────────────────────────────
+//  PRODUCTS
+// ─────────────────────────────────────────────
+
+model Product {
+  id              Int             @id @default(autoincrement())
+  sku             String          @unique @db.VarChar(60)
+  name            String          @db.VarChar(255)
+  slug            String          @unique @db.VarChar(280)
+  description     String          @db.LongText
+  shortDesc       String?         @db.VarChar(500)
+
+  // Pricing (in KES)
+  price           Decimal         @db.Decimal(12, 2)
+  comparePrice    Decimal?        @db.Decimal(12, 2)  // Crossed-out "was" price
+  costPrice       Decimal?        @db.Decimal(12, 2)  // Internal cost tracking
+
+  // Category
+  categoryId      Int
+  category        Category        @relation(fields: [categoryId], references: [id])
+
+  // Seller
+  sellerId        String
+  seller          User            @relation(fields: [sellerId], references: [id])
+
+  // Status & visibility
+  status          ProductStatus   @default(DRAFT)
+  condition       ProductCondition @default(NEW)
+  isFeatured      Boolean         @default(false)
+  isDigital       Boolean         @default(false)
+
+  // Logistics
+  weight          Decimal?        @db.Decimal(8, 3)   // kg
+  length          Decimal?        @db.Decimal(8, 2)   // cm
+  width           Decimal?        @db.Decimal(8, 2)
+  height          Decimal?        @db.Decimal(8, 2)
+  freeShipping    Boolean         @default(false)
+
+  // Stats
+  viewCount       Int             @default(0)
+  soldCount       Int             @default(0)
+  rating          Decimal         @default(0) @db.Decimal(3, 2)
+  reviewCount     Int             @default(0)
+
+  // Relations
+  images          ProductImage[]
+  variants        ProductVariant[]
+  inventory       Inventory?
+  attributes      ProductAttribute[]
+  reviews         Review[]
+  orderItems      OrderItem[]
+  wishlistItems   WishlistItem[]
+  tags            ProductTag[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([categoryId])
+  @@index([sellerId])
+  @@index([status])
+  @@index([slug])
+  @@fulltext([name, description, shortDesc])
+  @@map("products")
+}
+
+model ProductImage {
+  id          Int     @id @default(autoincrement())
+  productId   Int
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  url         String  // Cloudinary URL
+  publicId    String  // Cloudinary public_id (for deletion)
+  alt         String?
+  width       Int?
+  height      Int?
+  sortOrder   Int     @default(0)
+  isPrimary   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([productId])
+  @@map("product_images")
+}
+
+model ProductVariant {
+  id          Int       @id @default(autoincrement())
+  productId   Int
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name        String    // e.g. "Red / XL"
+  sku         String    @unique
+  price       Decimal?  @db.Decimal(12, 2)  // Override product price if set
+  imageUrl    String?
+
+  // Option values (e.g. color=Red, size=XL)
+  options     Json      // { "color": "Red", "size": "XL" }
+
+  inventory   Inventory?
+  orderItems  OrderItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([productId])
+  @@map("product_variants")
+}
+
+model Inventory {
+  id          Int             @id @default(autoincrement())
+  productId   Int?            @unique
+  product     Product?        @relation(fields: [productId], references: [id])
+  variantId   Int?            @unique
+  variant     ProductVariant? @relation(fields: [variantId], references: [id])
+
+  quantity    Int             @default(0)
+  reserved    Int             @default(0)   // Items in pending orders
+  lowStock    Int             @default(5)   // Alert threshold
+
+  updatedAt DateTime @updatedAt
+
+  @@map("inventory")
+}
+
+model ProductAttribute {
+  id        Int     @id @default(autoincrement())
+  productId Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  name      String  // e.g. "Brand", "Material", "Screen Size"
+  value     String  // e.g. "Samsung", "Cotton", "6.5 inches"
+
+  @@index([productId])
+  @@map("product_attributes")
+}
+
+model Tag {
+  id       Int          @id @default(autoincrement())
+  name     String       @unique @db.VarChar(50)
+  slug     String       @unique @db.VarChar(60)
+  products ProductTag[]
+
+  @@map("tags")
+}
+
+model ProductTag {
+  productId Int
+  tagId     Int
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tag       Tag     @relation(fields: [tagId], references: [id])
+
+  @@id([productId, tagId])
+  @@map("product_tags")
+}
+
+enum ProductStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  OUT_OF_STOCK
+  ARCHIVED
+}
+
+enum ProductCondition {
+  NEW
+  LIKE_NEW
+  GOOD
+  FAIR
+  PARTS_ONLY
+}
+
+// ─────────────────────────────────────────────
+//  ORDERS
+// ─────────────────────────────────────────────
+
+model Order {
+  id              String      @id @default(uuid())
+  orderNumber     String      @unique  // e.g. ORD-2024-00123
+  buyerId         String
+  buyer           User        @relation(fields: [buyerId], references: [id])
+  addressId       Int?
+  address         Address?    @relation(fields: [addressId], references: [id])
+
+  status          OrderStatus @default(PENDING)
+  paymentStatus   PaymentStatus @default(UNPAID)
+
+  // Pricing totals (KES)
+  subtotal        Decimal     @db.Decimal(12, 2)
+  shippingFee     Decimal     @default(0) @db.Decimal(12, 2)
+  discount        Decimal     @default(0) @db.Decimal(12, 2)
+  total           Decimal     @db.Decimal(12, 2)
+
+  // Coupon used
+  couponCode      String?
+  couponDiscount  Decimal?    @db.Decimal(12, 2)
+
+  // Notes
+  buyerNote       String?     @db.Text
+  sellerNote      String?     @db.Text
+
+  // Relations
+  items           OrderItem[]
+  payments        Payment[]
+  statusHistory   OrderStatusHistory[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([buyerId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([orderNumber])
+  @@map("orders")
+}
+
+model OrderItem {
+  id          Int             @id @default(autoincrement())
+  orderId     String
+  order       Order           @relation(fields: [orderId], references: [id])
+  productId   Int
+  product     Product         @relation(fields: [productId], references: [id])
+  variantId   Int?
+  variant     ProductVariant? @relation(fields: [variantId], references: [id])
+
+  productName String          // Snapshot at time of purchase
+  variantName String?
+  imageUrl    String?
+  quantity    Int
+  unitPrice   Decimal         @db.Decimal(12, 2)
+  totalPrice  Decimal         @db.Decimal(12, 2)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id        Int         @id @default(autoincrement())
+  orderId   String
+  order     Order       @relation(fields: [orderId], references: [id])
+  status    OrderStatus
+  note      String?
+  changedBy String?     // User ID
+
+  createdAt DateTime @default(now())
+
+  @@index([orderId])
+  @@map("order_status_history")
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PENDING
+  PAID
+  PARTIALLY_PAID
+  REFUNDED
+  FAILED
+}
+
+// ─────────────────────────────────────────────
+//  PAYMENTS  (M-Pesa + future methods)
+// ─────────────────────────────────────────────
+
+model Payment {
+  id                  String        @id @default(uuid())
+  orderId             String
+  order               Order         @relation(fields: [orderId], references: [id])
+
+  method              PaymentMethod
+  status              PaymentTxStatus @default(INITIATED)
+  amount              Decimal       @db.Decimal(12, 2)
+
+  // M-Pesa specific fields
+  mpesaCheckoutId     String?       @unique  // MerchantRequestID from Safaricom
+  mpesaMpesaReceiptNo String?       @unique  // M-Pesa transaction code e.g. QHA81LK2AX
+  mpesaPhoneNumber    String?
+  mpesaResultCode     Int?
+  mpesaResultDesc     String?
+
+  // Raw callback stored for audit
+  rawCallback         Json?
+
+  paidAt              DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([orderId])
+  @@index([mpesaCheckoutId])
+  @@map("payments")
+}
+
+enum PaymentMethod {
+  MPESA
+  CARD
+  BANK_TRANSFER
+  CASH_ON_DELIVERY
+}
+
+enum PaymentTxStatus {
+  INITIATED
+  PENDING
+  SUCCESS
+  FAILED
+  CANCELLED
+  TIMEOUT
+}
+
+// ─────────────────────────────────────────────
+//  REVIEWS
+// ─────────────────────────────────────────────
+
+model Review {
+  id          Int     @id @default(autoincrement())
+  productId   Int
+  product     Product @relation(fields: [productId], references: [id])
+  userId      String
+  user        User    @relation(fields: [userId], references: [id])
+
+  rating      Int     // 1-5
+  title       String? @db.VarChar(150)
+  body        String? @db.Text
+  isVerified  Boolean @default(false)  // Verified purchase
+  isApproved  Boolean @default(false)  // Admin moderation
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([productId, userId])  // One review per user per product
+  @@index([productId])
+  @@map("reviews")
+}
+
+// ─────────────────────────────────────────────
+//  WISHLIST
+// ─────────────────────────────────────────────
+
+model WishlistItem {
+  id        Int     @id @default(autoincrement())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id])
+  productId Int
+  product   Product @relation(fields: [productId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, productId])
+  @@map("wishlist_items")
+}
+
+// ─────────────────────────────────────────────
+//  COUPONS
+// ─────────────────────────────────────────────
+
+model Coupon {
+  id              Int          @id @default(autoincrement())
+  code            String       @unique @db.VarChar(30)
+  type            CouponType
+  value           Decimal      @db.Decimal(10, 2)  // amount or percentage
+  minOrderAmount  Decimal?     @db.Decimal(12, 2)
+  maxUses         Int?
+  usedCount       Int          @default(0)
+  isActive        Boolean      @default(true)
+  expiresAt       DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@map("coupons")
+}
+
+enum CouponType {
+  PERCENTAGE
+  FIXED_AMOUNT
+  FREE_SHIPPING
+}
+
+// ─────────────────────────────────────────────
+//  SHIPPING
+// ─────────────────────────────────────────────
+
+model ShippingZone {
+  id          Int       @id @default(autoincrement())
+  name        String    // e.g. "Nairobi", "Mombasa", "Rest of Kenya"
+  counties    Json      // Array of county names covered
+  baseFee     Decimal   @db.Decimal(8, 2)
+  perKgFee    Decimal?  @db.Decimal(8, 2)
+  freeAbove   Decimal?  @db.Decimal(12, 2)  // Free shipping if order > this amount
+  isActive    Boolean   @default(true)
+  estDays     String    // e.g. "1-2", "3-5"
+
+  @@map("shipping_zones")
+}
